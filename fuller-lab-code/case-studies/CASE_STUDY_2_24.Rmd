@@ -1,0 +1,339 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+Created by Jack Petersen.
+
+## Introduction:
+
+This notebook will take an existing code framework used for processing data and adapt it to 2 slightly different datasets. The goal is to show how to make a new data processing function for plate reader assays by only making slight changes to our existing code. These case studies will focus on processing the data into easily usable files (a single UV spectrum). To make things simpler, we will only be save the files locally and will not be uploading them to the Shared Google Drive folder.
+
+Original Code: survey1_process_data.R
+
+Dataset 1: 1B-pH Plate.xlsx
+
+Dataset 2: 1G+4B - pH Plate.xlsx
+
+NOTE: Original code is included at the bottom
+
+## PACKAGES USED:
+
+run this code to install all of the packages used in this notebook if you have not done so already:
+
+```{r}
+install.packages("readxl")
+install.packages("writexl")
+```
+
+## CASE STUDY 1: 1B-pH Plate.xlsx
+
+```{r}
+library(readxl)
+library(writexl)
+
+process_data1 <- function(data_path) {
+  
+  #I have deleted the avg_data() function because these experiments are NOT being run in triplicate, so we are no longer averaging columns in the pH or salt assays (compare to original code)
+    
+
+  #---------------------------DEFINE VARIABLES and PREPROCESSING THE DATA------------------
+  #define a file name to allow for easy naming of the files later on 
+  data_file_name <- "1B_"
+  
+  #load data file as a .xlsx file using the readxl library. the range gets rid of all of the metadata in the header of the data file 
+  data <- read_excel(data_path, range = "1B - pH Plate!A3:CT129") 
+
+  #delete the temperature column 
+  data <- data[, -which(names(data) == "Temperature(¡C)")]
+
+  #delete columns with all NA values for all rows (delete empty wells)
+  data <- data[, colSums(!is.na(data)) > 0]
+
+  #define how many columns there are using the ncol() function after deleteing all the empty colmns 
+  num_columns <- ncol(data)
+
+  #extract wavelength column 
+  wavelength <- data$Wavelength
+  
+  #create a mapping of first letters to labels
+  label_mapping <- setNames(c('0mM', '200mM', '500mM'), c('A', 'B', 'C'))
+  
+  #create mapping for pH values based off of second number in column title 
+  ph_mapping <- setNames(c('4', '5', '6','7', '8', '9'), c('1', '3', '5', '7', '9', '11'))
+
+
+  #------------------------------------FOR LOOP-------------------------------------------------
+
+  #There are too many data points to pull cell by cell. Because we know that each column is formatted the same (its a UV spectrum from 450-700nm for that particular cell), we can use that to find the columns we want (non empty cells) then combine them in a new file with our wavelength numbers to create individual spectra for each sample tested 
+
+  #iterate over the columns starting from the second one
+  for (i in 2:num_columns) {
+    
+    #get the column name to determine the label.  
+    col_name <- names(data)[i]
+    
+    #create a new dataframe with the current column as absorbance (wavelength define above)
+    current_data <- data.frame(Wavelength = wavelength, data[[i]])
+    
+    #create variable first_letter to store the first letter of the column name 
+    first_letter <- substr(col_name, 1, 1)
+    
+    #create variable first_letter to store the second letter of the column name 
+    second_letter <- substr(col_name, 2, 3)
+  
+    #get the label based on the first letter
+    label <- ifelse(first_letter %in% names(label_mapping), label_mapping[[first_letter]], NA)
+  
+    #get pH from second letter 
+    pH <- ifelse(second_letter %in% names(ph_mapping), ph_mapping[[second_letter]], NA)
+    
+    
+    #construct the file name using the dynamic label
+    file_name <- paste0(data_file_name, label, "_NaCl_pH_", pH ,"_Phosphate Buffer", ".xlsx")
+
+    
+    #create dataframe and save as .xlsx 
+    current_data <- data.frame(Wavelength = wavelength, Absorbance = data[[i]])
+    
+    #write the file using the writexl library 
+    write_xlsx(current_data, path = file_name)
+    
+    
+    #console output 
+    message("File: ", file_name, " has been created.")
+  
+    
+  } #END FOR LOOP 
+
+} #END FUNCTION 
+```
+
+Run the script:
+
+```{r}
+#THIS SCRIPT WILL SAVE FILES TO YOUR WORKING DIRECTORY 
+#MAKE SURE TO RUN THE ABOVE CELL BEFORE TRYING TO RUN THIS CELL 
+
+
+#MAKE SURE TO CHANE THIS FILE PATH TO YOUR LOCAL DATA FILE PATH 
+process_data1('/Users/jackpetersen/Downloads/1B - pH Plate.xlsx') 
+```
+
+## CASE STUDY 2: 1G+4B - pH Plate.xlsx
+
+For this file, there are 2 separate pH surveys, so we basically have to do our for loop from above on two different parts of the plate.
+
+```{r}
+library(readxl)
+library(writexl)
+
+process_data2 <- function(data_path) {
+
+  #---------------------DEFINE VARIABLES and PREPROCESSING THE DATA---------------------------
+  #load data file as a .xlsx file using the readxl library
+  data <- read_excel(data_path, range = "Sheet1!A3:CT129") 
+  
+  #delete the temperature column 
+  data <- data[, -which(names(data) == "Temperature(¡C)")]
+
+  #delete columns with all NA values for all rows (delete empty wells)
+  data <- data[, colSums(!is.na(data)) > 0]
+
+  #define how many columns there are using the ncol() function after deleteing all the empty colmns 
+  num_columns <- ncol(data)
+
+  #extract wavelength column 
+  wavelength <- data$Wavelength
+  
+  #create a mapping of first letters to labels
+  label_mapping <- setNames(c('0mM', '200mM', '500mM','0mM', '200mM', '500mM'), c('A', 'B', 'C', 'F', 'G', 'H'))
+  
+  #define a file name to allow for easy naming of the files later on 
+  data_file_name_mapping <- setNames(c('1G_','1G_','1G_','4B_','4B_','4B_'), c('A', 'B', 'C', 'F', 'G', 'H'))
+  
+  #create mapping for pH values based off of second number in column title 
+  ph_mapping <- setNames(c('4', '5', '6','7', '8', '9'), c('1', '2', '3', '4', '5', '6'))
+
+
+  #------------------------------------FOR LOOP----------------------------------------
+
+  #iterate over the columns starting from the second one
+  for (i in 2:num_columns) {
+    
+    #get the column name to determine the label.  
+    col_name <- names(data)[i]
+    
+    #create a new dataframe with the current column as absorbance (wavelength define above)
+    current_data <- data.frame(Wavelength = wavelength, data[[i]])
+    
+    
+                 #------------MAPPING CODE-------------------------
+    #create variable first_letter to store the first letter of the column name 
+    first_letter <- substr(col_name, 1, 1)
+    
+    #create variable to store the second letter of the column name 
+    second_letter <- substr(col_name, 2, 2)
+  
+    #get the label based on the first letter
+    label <- ifelse(first_letter %in% names(label_mapping), label_mapping[[first_letter]], NA)
+    
+    #get name based on first letter 
+    name <- ifelse(first_letter %in% names(data_file_name_mapping), data_file_name_mapping[[first_letter]], NA)
+    
+    #get pH value based of second string 
+    pH <- ifelse(second_letter %in% names(ph_mapping), ph_mapping[[second_letter]], NA)
+  
+    #construct the file name using the dynamic label
+    file_name <- paste0(name, label, "_NaCl_pH",pH,"_Phosphate Buffer", ".xlsx") #MAKE SURE SALT IS CORRECT 
+               #------------------------------------------------------    
+    
+    
+    #create dataframe and save as .xlsx (write_xlsx() is a function from the writexl library)
+    current_data <- data.frame(Wavelength = wavelength, Absorbance = data[[i]])
+    write_xlsx(current_data, path = file_name)
+    
+    
+    #console output 
+    message("File: ", file_name, " has been created.")
+  
+    
+  } #END FOR LOOP 
+
+} #END FUNCTION 
+
+```
+
+Run the Script:
+
+```{r}
+#THIS SCRIPT WILL SAVE FILES TO YOUR WORKING DIRECTORY 
+#MAKE SURE TO RUN THE ABOVE CELL BEFORE TRYING TO RUN THIS CELL 
+
+
+#MAKE SURE TO CHANE THIS FILE PATH TO YOUR LOCAL DATA FILE PATH 
+process_data2('/Users/jackpetersen/Downloads/1G+4B - pH Plate .xlsx')
+```
+
+## Original Code: survey1_process_data.R
+
+```{r}
+library(tidyverse)
+library(googledrive)
+library(googlesheets4)
+library(writexl)
+library(dplyr)
+
+survey1_process_data <- function(input, raw_data, drive_folder_id) {
+  
+  #function to average data
+  #in the future, we may be able to build this into the main function that way we aren't embedding functions, but for right now, this works well
+  avg_data <- function(data) {
+    
+    
+    # delete temperature row (can be adjusted later if needed)
+    data <- data[, -which(names(data) == "Temperature(¡C)")]
+    
+    # delete columns with all NA values for all rows (delete empty wells)
+    data <- data[, colSums(!is.na(data)) > 0]
+    
+    # initialize a new dataframe to hold the averaged data
+    # keep the first column intact (assuming it's 'Wavelength' or similar)
+    averaged_data <- data.frame(Wavelength = data[[1]])
+    
+    # get all column names except the first one (Wavelength column stays the same)
+    column_names <- colnames(data)[-1]
+    
+    # loop through the columns in sets of three, averaging and adding to the dataset 
+    for (i in seq(1, length(column_names), by = 3)) {
+      
+      # ensure we have a group of three columns
+      if (i + 2 <= length(column_names)) {
+        
+        # group 3 columns together 
+        cols_to_average <- column_names[i:(i+2)]
+        
+        # name the averaged column after all three original columns + _avg
+        averaged_column_name <- paste(cols_to_average, collapse = "_") %>% paste0("_avg")
+        
+        # calculate the mean of the three columns and add it as a new column to 'averaged_data'
+        averaged_data[[averaged_column_name]] <- rowMeans(data[, cols_to_average], na.rm = TRUE)
+      }
+    }
+    
+    
+    
+    # print success message to console
+    print("Success! Your processed data is now in the dataframe 'averaged_data'")
+    
+    return(averaged_data)
+    
+    
+  } #end of avg_data 
+  
+  #-----------------main processing function-----------------------------
+  
+  
+  # average the data. function define above 
+  averaged_data <- avg_data(raw_data)
+  
+  #define salt concentrations and their corresponding column prefixes
+  salt_concentrations <- c('0mM' = 'A', '200mM' = 'B', '500mM' = 'C')
+  
+  #define the column ranges for each peptoid
+  peptoid_column_ranges <- list('1' = 1:3, '2' = 5:7, '3' = 9:11, '4' = 1:3, '5' = 5:7, '6' = 9:11)
+  
+  
+ 
+  for (i in 1:6) {
+    peptoid_name <- input[[paste0("peptoid_name_", i)]]
+    num_salt_conc <- input[[paste0("num_dif_salt_conc", i)]]
+    file_salt_concentrations <- if (num_salt_conc == 1) c("0mM") else names(salt_concentrations)
+    
+    for (salt_conc in file_salt_concentrations) {
+      prefix <- salt_concentrations[[salt_conc]]
+      column_range <- peptoid_column_ranges[[as.character(i)]]
+      if (i > 3) { prefix <- 'E' }  # For peptoids 4, 5, 6, use 'E' instead of 'A'
+      
+      # construct the column names for this peptoid and salt concentration
+      relevant_column_names <- paste0(prefix, column_range, "_.*_avg")
+      
+      # find the column name that matches the pattern
+      relevant_column <- grep(relevant_column_names, names(averaged_data), value = TRUE)
+      
+      if (length(relevant_column) == 1) {
+        # filter data for the current peptoid and salt concentration
+        filtered_data <- averaged_data %>%
+          select(Wavelength, Absorbance = all_of(relevant_column))
+        
+        # construct file name based on user inputs
+        file_name <- paste(peptoid_name, salt_conc, input$salt_type, input$pH_tested, input$buffer_type, sep = "_")
+        file_name <- paste0(file_name, ".xlsx")
+        
+        # write the filtered data to an Excel file
+        output_file_path <- paste0("/Users/jackpetersen/Desktop/code/AuNP-Peptoid/data", file_name)
+        write_xlsx(filtered_data, output_file_path)
+        
+        # define the Google Drive folder IDs --- MAKE THIS BASED ON NANOPARTICLE SIZE IN FUTURE 
+        data_drive_folder_id <- '16VeTz69DEirMMgS6sFvBJVqaW7Lax7cn'
+
+        # upload the file to Google Drive
+        drive_upload(media = output_file_path, path = as_id(data_drive_folder_id), name = file_name, overwrite = TRUE)
+        
+        
+        
+        #delete the local file after uploading
+        if (file.exists(output_file_path)) {
+          file.remove(output_file_path)
+        }
+        
+        
+        print(file_name)
+      } else {
+        print(paste0("No data found for ", peptoid_name, " at ", salt_conc))
+      }
+    }
+  }
+}
+
+```

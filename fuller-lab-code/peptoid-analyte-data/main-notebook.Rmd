@@ -1,0 +1,265 @@
+---
+title: "Peptoid-Analyte Fluorescence Spectra"
+output: html_notebook
+---
+
+Written by: Jack Petersen Started: 2/28/24 Finished:
+
+This notebook documents my processing of the peptoid-analyte fluorescence spectral data.
+
+PACKAGES USED IN THIS NOTEBOOK:
+
+```{r}
+install.packages("readr")
+install.packages("writexl")
+install.packages("openxlsx")
+install.packages("dplyr")
+```
+
+First, I will change the data file format from .txt to .xlsx. it probably isn't necessary, that's just what I am more comfortable with. Online, it says that this is as simple as replacing the .txt to .xlsx
+
+```{r}
+library(readr)
+library(writexl)
+
+convert_txt_to_xlsx <- function(base_path) {
+  #list all subfolders
+  subfolders <- list.dirs(path = base_path, full.names = TRUE, recursive = FALSE)
+  
+  #iterate through each subfolder
+  for (subfolder in subfolders) {
+    #list all .txt files in the current subfolder
+    txt_files <- list.files(path = subfolder, pattern = "\\.txt$", full.names = TRUE)
+    
+    #convert each .txt file to .xlsx
+    for (txt_file in txt_files) {
+      #read the .txt file with UTF-16 encoding (chatGPT helped me with syntax on this)
+      file_content <- read.delim(txt_file, header = FALSE, fileEncoding = "UTF-16LE", check.names = FALSE, fill = TRUE)
+      
+      #construct the .xlsx file name
+      xlsx_file <- sub("\\.txt$", ".xlsx", txt_file)
+      
+      #write to .xlsx
+      write_xlsx(file_content, xlsx_file)
+    }
+  }
+}
+
+```
+
+Run script:
+
+```{r}
+#run script on 'raw data' folder
+convert_txt_to_xlsx("/Users/jackpetersen/Desktop/code/peptoid-analyte-data/raw data")
+```
+
+STEP 2: Great! Now we have our .xlsx files and are ready to start processing our data. The first thing I am going to do is to delete all empty rows (empty wells), delete the temperature row, delete the headers, and replace max out values (#SAT) with the highest value in the column, and starting on row 2 (excludes wavelength row) I am going to normalize by dividing all of the numerical values by high numerical value in that column, and blank the data. Finally, I will make new files for the new data. I will start by writing the script for just one, then combine with the for loop I created above to do it for all of the files for bug testing.
+
+```{r}
+library(readxl)
+library(writexl)
+library(readr)
+library(dplyr)
+
+process_data1 <- function(file_path) {
+#----------------------LOAD FILE---------------------------
+#file_path <- "/Users/jackpetersen/Desktop/code/peptoid-analyte-data/raw data/2Naph peptoid + analytes/10 uM peptoid_plate1_MTN_032322_102NAPH_1.xlsx" 
+data <-  read_excel(file_path, sheet = "Sheet1", range = "A4:CT425")
+#print(head(data))
+
+
+#---------------------CLEAN--------------------------------
+#delete temperature row 
+data <- data[, -which(names(data) == "Temperature(¡C)")]
+#print(head(data))
+
+#convert data to a tibble
+data <- as_tibble(data)
+
+#remove columns where the first row of data is NA (empty wells)
+data <- select(data, where(~ !is.na(.[2])))
+#print(head(data))
+
+
+#-------------------------FIX #SAT SIGNALS------------------   
+#replace #SAT values with max values in the row. To do this is unfortunately a little bit more complicated than it sounds. 
+data <- data %>%
+  mutate(across(.cols = where(is.character), 
+                .fns = ~ replace(.x, .x == "#SAT", NA_character_)))  %>%       #replace '#SAT' with NA so that we can do numeric operations on the columns (finding the max value)
+  mutate(across(.cols = where(is.character),
+                .fns = ~ parse_number(.x))) %>%                                #parse_number is from the readr library and converts characters to numeric values 
+  mutate(across(.cols = where(is.numeric),
+                .fns = ~ ifelse(is.na(.x), max(.x, na.rm = TRUE), .x)))        # sets '#SAT' cells to the max value in their respective row 
+#print(data)
+
+
+
+#----------------------BLANK----------------------------------
+#names of black columns so that we can remove them 
+blank_column_names <- c("A1", "B1", "C1", "D1", "E1", "F1") 
+blank <- "A1"
+
+#subtract the blank from all wells except the wavelength column 
+data[, -1] <- data[, -1] - data[[blank]]
+
+#remove columns listed in blank_column_names (the rest of the blanks)
+data <- data %>% select(-all_of(blank_column_names))
+#print(data)
+
+
+#----------------------NORMALIZE----------------------
+#to normalize, I am just going to divide each the value in each cell by the max value in its data table (excluding first column). because this is such a common
+#technique, I found a way online to do this very easily using the 'dplyr' library, similar to what I did when fixing the #sat signals 
+data <- data %>% mutate(across(-1, ~ .x / max(.x, na.rm = TRUE)))
+#print(data)
+
+
+
+#------------------------AVERAGE DATA--------------------
+#in this section i will use a create a mapping for the naming, and then use a for loop to average columns, then make a new column in a new data frame for the averaged data, 'avg_data' 
+
+#function to create row-wise mean of specified columns (will copy and past specific column names later)
+calculate_average <- function(df, columns, new_col_name) {
+  df[[new_col_name]] <- rowMeans(df[, columns], na.rm = TRUE)
+  return(df)
+}
+
+
+#'Peptoid + 10 Benzo-[a]-pyrene' = A2,B2,C2
+#' Peptoid + 25 Benzo-[a]-pyrene' = A3,B3,C3 
+#' Peptoid + 50 Benzo-[a]-pyrene' = A4,B4,C4
+#' Peptoid + 100 Benzo-[a]-pyrene' = A5, B5, C5 
+#FOR FIRST, USE 'data' to initialize 'averaged_data', then use 'averaged_data'
+averaged_data <- calculate_average(data, c("A2", "B2", "C2"), "10 Benzo-[a]-pyrene")
+averaged_data <- calculate_average(averaged_data, c("A3", "B3", "C3"), "25 Benzo-[a]-pyrene")
+averaged_data <- calculate_average(averaged_data, c("A4", "B4", "C4"), "50 Benzo-[a]-pyrene")
+averaged_data <- calculate_average(averaged_data, c("A5", "B5", "C5"), "100 Benzo-[a]-pyrene")
+
+#' Peptoid + 10 Phenanthrene' = A6,B6,C6 
+#' Peptoid + 25 Phenanthrene' = A7,B7,C7 
+#' Peptoid + 50 Phenanthrene' = A8, B8, C8 
+#' Peptoid + 100 Phenanthrene' = A9,B9,C9
+averaged_data <- calculate_average(averaged_data, c("A6", "B6", "C6"), "10 Phenanthrene")
+averaged_data <- calculate_average(averaged_data, c("A7", "B7", "C7"), "25 Phenanthrene")
+averaged_data <- calculate_average(averaged_data, c("A8", "B8", "C8"), "50 Phenanthrene")
+averaged_data <- calculate_average(averaged_data, c("A9", "B9", "C9"), "100 Phenanthrene")
+
+
+#' Peptoid + 10 Chrysene' = A10, B10, C10
+#' Peptoid + 25 Chrysene' = A11, B11, C11
+#' Peptoid + 50 Chrysene' = D10, E10, F10
+#' Peptoid + 100 Chrysene' = D11, E11, F11
+averaged_data <- calculate_average(averaged_data, c("A10", "B10", "C10"), "10 Chrysene")
+averaged_data <- calculate_average(averaged_data, c("A11", "B11", "C11"), "25 Chrysene")
+averaged_data <- calculate_average(averaged_data, c("D10", "E10", "F10"), "50 Chrysene")
+averaged_data <- calculate_average(averaged_data, c("D11", "E11", "F11"), "100 Chrysene")
+
+#' Peptoid + 10 Pyrene'= D2, E2, F2
+#' Peptoid + 25 Pyrene' = D3, E3, F3 
+#' Peptoid + 50 Pyrene' = D4, E4, F4 
+#' Peptoid + 100 Pyrene' = D5, E5, F5 
+averaged_data <- calculate_average(averaged_data, c("D2", "E2", "F2"), "10 Pyrene")
+averaged_data <- calculate_average(averaged_data, c("D3", "E3", "F3"), "25 Pyrene")
+averaged_data <- calculate_average(averaged_data, c("D4", "E4", "F4"), "50 Pyrene")
+averaged_data <- calculate_average(averaged_data, c("D5", "E5", "F5"), "100 Pyrene")
+
+
+#' Peptoid + 10 Anthracene' = D6,E6,F6
+#' Peptoid + 10 Anthracene' = D7,E7,F7
+#' Peptoid + 10 Anthracene' = D8,E8,F8
+#' Peptoid + 10 Anthracene' = D9,E9,F9
+averaged_data <- calculate_average(averaged_data, c("D6", "E6", "F6"), "10 Anthracene")
+averaged_data <- calculate_average(averaged_data, c("D7", "E7", "F7"), "25 Anthracene")
+averaged_data <- calculate_average(averaged_data, c("D8", "E8", "F8"), "50 Anthracene")
+averaged_data <- calculate_average(averaged_data, c("D9", "E9", "F9"), "100 Anthracene")
+
+
+
+#now, i will remove all of the old columns from 'averaged data'. to avoid hardcoding this, i am just going to remove all of the columns that are in data from averaged_data (except for the wavelength column)
+cols_remove <- colnames(data)[-1]
+averaged_data <- averaged_data %>% select(-all_of(cols_remove))
+
+
+#print(averaged_data)
+
+
+
+#---------------------CREATE DATA FILES---------------------
+#to create the individual data files, i will map their column name to a file name based on the plate map, then save the files to 'processed data folder'. 
+#the folder is broken up with the same sub folders as the raw data. to ensure the files are go to the right place, am going do define a variable called 'data_folder_path' by extracting the subfolder that the raw data file is in using the basename() function because the sub folders have the exact same name in the raw and processed dirs
+original_dir <- dirname(file_path)
+folder_name <- basename(original_dir)
+new_base_dir <- "/Users/jackpetersen/Desktop/code/peptoid-analyte-data/processed data/intensity-normalized, averaged and blank-corrected"
+new_folder_path <- file.path(new_base_dir, folder_name)
+
+
+#map names using plate map. The end of the raw data file names seem to contain all of the needed info, so i will extract that as a str and use it for the file naming
+#TIP: have ChatGPT write the file code (ex. .*_([^_]+_[^_]+)\\..*$) for you by giving it an example file path 
+new_file_name <- sub(".*_([^_]+_[^_]+)\\..*$", "\\1", file_path)
+
+
+
+#list of measurements to process
+measurements <- colnames(averaged_data)[-1]
+
+#copied from AuNP-Peptoid-Notebook.Rmd
+for (measurement in measurements) {
+  #filter data for the current measurement and make the column "absorbance" (the original column name will be used as the file name)
+  new_file_data <- averaged_data %>% select(Wavelength, Absorbance = all_of(measurement))
+
+  new_file_name <- sub(".*_([^_]+_[^_]+)\\..*$", "\\1", file_path)
+  
+  #create a file name (same as original column name)
+  output_file_name <- paste0(new_file_name, "_", measurement)
+  
+  #if statement is to ensure that there are no errors for improper data files 
+  if(nrow(new_file_data) > 0) {
+  write_xlsx(new_file_data, file.path(new_folder_path, paste0(output_file_name, ".xlsx")))
+    print(output_file_name)
+  } else {
+  message("No data to write for ", measurement)
+  }
+
+ 
+  } #end for loop 
+
+
+} # end process_data1()
+
+
+```
+
+run script:
+
+```{r}
+#2Naph peptoid + analytes (MAKE SURE FOLDER NAMES MATCH FOR PROCESSED AND RAW)
+process_data1("/Users/jackpetersen/Desktop/code/peptoid-analyte-data/raw data/2Naph peptoid + analytes/10 uM peptoid_plate1_MTN_032322_102NAPH_1.xlsx")
+process_data1("/Users/jackpetersen/Desktop/code/peptoid-analyte-data/raw data/2Naph peptoid + analytes/10 uM peptoid_plate2_MTN_032822_102NAPH_2.xlsx")
+process_data1("/Users/jackpetersen/Desktop/code/peptoid-analyte-data/raw data/2Naph peptoid + analytes/10 uM peptoid_plate3_MTN_032922_102NAPH_3.xlsx")
+process_data1("/Users/jackpetersen/Desktop/code/peptoid-analyte-data/raw data/2Naph peptoid + analytes/50 uM peptoid_plate2_MTN_041822_502NAPH_2.xlsx")
+process_data1("/Users/jackpetersen/Desktop/code/peptoid-analyte-data/raw data/2Naph peptoid + analytes/50 uM peptoid_plate3_MTN_041922_502NAPH_3.xlsx")
+process_data1("/Users/jackpetersen/Desktop/code/peptoid-analyte-data/raw data/2Naph peptoid + analytes/50 uM peptoid_plate1_MTN_040522_502NAPH_1.xlsx")
+```
+
+```{r}
+#15mer peptoid+ analytes (MAKE SURE FOLDER NAMES MATCH FOR PROCESSED AND RAW)
+process_data1("/Users/jackpetersen/Desktop/code/peptoid-analyte-data/raw data/15mer peptoid+ analytes/50uMpeptoid_plate3_MTN_031722_50Pep_3.xlsx")
+process_data1("/Users/jackpetersen/Desktop/code/peptoid-analyte-data/raw data/15mer peptoid+ analytes/50uMpeptoid_plate1_MTN_030722_50Pep_1.xlsx")
+process_data1("/Users/jackpetersen/Desktop/code/peptoid-analyte-data/raw data/15mer peptoid+ analytes/50uMpeptoid_plate2_MTN_030822_50Pep_2.xlsx")
+process_data1("/Users/jackpetersen/Desktop/code/peptoid-analyte-data/raw data/15mer peptoid+ analytes/10uMpeptoid_plate3_MTN_022822_10Pep_3.xlsx")
+process_data1("/Users/jackpetersen/Desktop/code/peptoid-analyte-data/raw data/15mer peptoid+ analytes/10uMpeptoid_plate2_MTN_022322_10Pep_2.xlsx")
+process_data1("/Users/jackpetersen/Desktop/code/peptoid-analyte-data/raw data/15mer peptoid+ analytes/10uMpeptoid_plate1_MTN_022322_10Pep_1.xlsx")
+```
+
+EDIT NAMING FOR PEPTOID ONLY AND ANALYTE ONLY PLATES:
+
+```{r}
+
+
+
+```
+
+```{r}
+
+```
