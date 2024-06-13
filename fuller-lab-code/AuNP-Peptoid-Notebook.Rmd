@@ -1,0 +1,932 @@
+---
+title: "AuPeptoidDynamics"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+  html_notebook: default
+editor_options:
+  markdown:
+    wrap: 72
+---
+
+# INTRODUCTION:
+
+This notebook documents my progress in creating a database/application
+for analyzing the peptoid-AuNP interactions. In practice, this will be
+an R project, and all functions will be accessible through the console.
+This notebook will act as manual to the R project and its functions. We
+will start by defining our needed libraries, then define functions for
+loading raw excel files from the plate reader, then define functions for
+processing that data into a more usable format and saving those files to
+a shared Google Drive. Next, we will define our "Plotting" functions;
+functions used to plot different spectra and overlays. Finally, we will
+define a set of functions used to update a Master Google Sheet stored on
+the shared Google Drive. (NOTE: For this demo, I used a personal Google
+Drive folder formatted to mathc the proposed shared Google Drive)
+
+Ultimately, we will index all of these functions in a single document so
+that people can use these functions for data analysis in the Fuller lab
+without any memorization. We will store all of the data, both raw and
+processed, on the Google Drive because it is easily expandable and
+shareable. Each folder and file has a unique ID, so changing folder
+structure/paths wont affect the application if we choose to expand.
+Further, it will allow data to remain updated for all users without the
+need for a database (and all the associated hosting fees, etc).
+
+Before we start, let's first detail out the file structure of the R
+Project folder and shared Google Drive folder. (NOTE: The current code
+uses a folder on my personal drive, but this can be very easily changed
+to a folder in the shared drive upon approval)
+
+-   The R folder will simply contain a folder with all of the R
+    functions and a pdf explaining the functions and how to use them.
+
+-   The Google Drive Folder will be located in the main "Fuller research
+    lab" folder and will follow the folding folder structure (NOTE: the
+    master Google Sheet will be located in the top folder):
+
+    ![](images/Screenshot%202023-12-18%20at%209.07.58%20PM-01.png){width="482"
+    height="580"}
+
+The folder will have the name "AuPeptoidDynamics", the name of the
+project, and will have two main folders "Plots" and "Data". The "Data"
+folder will be divided into "RAW" and "PROCESSED", which will each be
+further divided into "UV" and "DLS" (we can add more folders for further
+very easily down the line on Google Drive due to the unique FolderID of
+each folder). The "RAW" data folder is divided based on the size of the
+nanoparticles used in the experiment (10 nm, 20 nm, 50 nm, 80 nm). Each
+of these folders is where a person can upload their exported data from
+the plate reader, perhaps from the instrument lab computer right after
+the experiment is finished. The "PROCESSED" data folder is where each of
+the peptoid's processed excel sheet with their spectral data will be
+deposited. It is also divided based on the size of the nanoparticles
+used in the experiment. The "PLOTS" folder is where all plots generated
+will be deposited.
+
+### **A quick note on the formatting of the plates:**
+
+1.  **All plates will be formatted as:**
+
+    | 1     | 2     | 3     |
+    |-------|-------|-------|
+    | **4** | **5** | **6** |
+
+For example:
+
+![](images/Screenshot%202023-12-18%20at%209.41.47%20PM.png){width="464"}
+
+**1:** 3I
+
+**2:** 3J
+
+**3:** 4B
+
+**4:** 4C
+
+**5:** 4D
+
+**6:** 4E
+
+2.  Make sure to export **1** **Excel Sheet per plate**
+3.  Name exported excel sheet as `1-2-3-4-5-6.xlsx`
+    ii. In the example above, the Excel sheet would be named
+        `3I-3J-4B-4C-4D-4E.xlsx`
+    iii. This is a bit harder than just naming it the date, but it saves
+         a lot of time/lines of code
+
+# PART I: LIBRARIES:
+
+```{r tidy=TRUE, eval=FALSE}
+library(magrittr)
+library(formatR)
+library(tidyverse)
+library(readxl)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(writexl)
+library(googledrive)
+library(googlesheets4)
+library(httpuv)
+```
+
+# PART II: LOADING RAW PLATE READER DATA
+
+To start, we first need to connect to Google Drive. To do this, I need
+to call this function from the `googledrive` library:
+
+```{r tidy=TRUE, eval=FALSE}
+#this authenticates your Drive connection. The console will walk you through instructions. 
+drive_auth()
+```
+
+### load_plate()
+
+Next, we need to load our plate reader excel file into a data frame to
+begin editing and analyzing with R. To do this, I will define a function
+`load_plate()`
+
+`load_plate()` uses a function called `process_data()`, which is defined
+here along with another function it uses, `average_columns()`. These
+functions are only to be used internally, and won't be called directly
+by the user.
+
+Define dependent functions for `load_plate()`:
+
+```{r tidy=TRUE, eval=FALSE}
+#function to quickly average every three columns
+average_columns <- function(df, cols) {
+  df %>%
+    transmute(Wavelength, Avg = rowMeans(select(., all_of(cols))))
+}
+
+
+
+#main processing function
+process_data <- function(df) {
+  #get all column names except the first one (Wavelength column stays the same)
+  column_names <- colnames(df)[-1]
+  
+  #prepare a new data frame with only the Wavelength column 
+  result <- data.frame(Wavelength = df$Wavelength)
+
+  #loop through the columns in sets of three, averaging and adding to the data set 
+  for (i in seq(1, length(column_names), by = 3)) {
+    
+    #ensure we have a group of three columns
+    if (i + 2 <= length(column_names)) {
+      
+      #group 3 columns together 
+      cols_to_average <- column_names[i:(i+2)]
+      
+      #name the averaged column all three original columns + _avg
+      averaged_column_name <- paste(cols_to_average, collapse = "_") %>% paste0("_avg")
+      
+      #organize data and bind it to result data frame
+      avg_data <- average_columns(df, cols_to_average)
+      colnames(avg_data)[2] <- averaged_column_name
+      result <- bind_cols(result, avg_data[2])
+    }
+  }
+  
+  return(result)
+}
+
+
+
+#function to rename columns with user input, this will be what the actual function looks like
+rename_columns <- function(df) {
+  for (col in names(df)) {
+    new_name <- readline(
+      paste("Enter new name for", col, "(press enter to keep the same): "))
+   if (new_name != "") {
+      names(df)[names(df) == col] <- new_name
+   }
+  return(df)
+  }
+}
+```
+
+Define `load_plate()`:
+
+```{r tidy=TRUE, eval=FALSE}
+load_plate <- function(file_name){
+  
+  #define nanoparticle size
+  np_size <- readline(prompt = "What size nanoparticles did you use?:     ")
+  
+  
+  #select the folder ID based on the input size
+  folder_id <- switch(np_size,
+                      "10 nm" = "1oElzmBU78cwOOy6xSRDfYfQ2aB9vCWdZ",
+                      "10nm"  = "1oElzmBU78cwOOy6xSRDfYfQ2aB9vCWdZ",
+                      "20 nm" = "1LGdtJir4ZNIg4z0dpW1K_IhXXR7NcRmi",
+                      "20nm"  = "1LGdtJir4ZNIg4z0dpW1K_IhXXR7NcRmi",
+                      "50 nm" = "1oMyxhZTeBEi8w8ka3BzxOShBOZuxoe12",
+                      "50nm"  = "1oMyxhZTeBEi8w8ka3BzxOShBOZuxoe12",
+                      "80 nm" = "1xrrS0O62iTptYxjLykFXYeLxeWHNM0uX",
+                      "80nm"  = "1xrrS0O62iTptYxjLykFXYeLxeWHNM0uX")
+
+  if (is.null(folder_id)) {
+    stop("Invalid AuNP size entered.")
+  }
+
+  #list files in the folder
+  files_in_folder <- drive_ls(as_id(folder_id))
+
+  #find the specific file and get its ID
+  file_info <- files_in_folder[files_in_folder$name == file_name, ]
+  if (nrow(file_info) == 0) {
+    stop("File not found: ", file_name)
+  }
+  file_id <- file_info$id
+
+  #download the file to a temporary location
+  temp_file <- tempfile(fileext = ".xlsx")
+  drive_download(as_id(file_id), path = temp_file, overwrite = TRUE)
+
+  #read the data from the Excel file
+  wide_data <- read_excel(temp_file, range = "Sheet1!A3:CT129")
+  
+  #delete temperature row (we can change this if we decide we want temperature later on)
+  wide_data <- wide_data[, -which(names(wide_data) == "Temperature(¡C)")]
+
+  #delete columns with all NA values for all rows (delete empty wells)
+  data <- wide_data[, colSums(!is.na(wide_data)) > 0]
+
+  #processed_data() is a function i wrote which is defined below. it averages the triplicate wells 
+  averaged_data <- process_data(data) 
+  
+  #rename_columns() is also a function that i wrote (defined below). it renames the columns in the processed data sets to their proper name 
+  averaged_data <- rename_columns(averaged_data)
+  
+  #lets user know it worked in console and what their data frame is called to be used in the next step
+  print("success! your processed data is now is data frame 'averaged_data'")
+  
+  #returns the updated file 
+  return(averaged_data)
+}
+```
+
+How to Execute: (example using `4F-4G-4H-4I-4J-5A.xlsx`)
+
+```{r tidy=TRUE, eval=FALSE}
+#execute function 
+load_plate("4F-4G-4H-4I-4J-5A.xlsx") 
+```
+
+NOTE: We may want to ask someone for help as to how to automate this
+naming process. For now, you have to look at you plate diagram and label
+what it is. Each column will be named according to the wells its in. I
+know it is a bit tedious, but if you have a photo of the plate for
+reference it only takes about 30 seconds. Here is an example of the
+console inputs using `4F-4G-4H-4I-4J-5A.xlsx`:
+
+![](images/Screenshot%202023-12-18%20at%2011.31.30%20PM.png)
+
+Now, our data sheet looks something like this:
+
+![](images/Screenshot%202023-12-18%20at%2011.19.20%20PM.png)
+
+and we have a data frame called **`averaged_data`** that contains **all
+of our plates** **processed data.**
+
+### make_individual_files_from_averaged_data()
+
+Next, we need make this into a bunch of individual, two column files for
+each peptoid at each [NaCl]. Then we need to upload those to the
+`PROCESSED` data folder in Google Drive. To this, I will define a
+function called `make_individual_files_from_averaged_data()`. The input
+will simply be the `averaged_data` data frame that we just created from
+our raw data.
+
+Define `make_individual_files_from_averaged_data()`:
+
+```{r tidy=TRUE, eval=FALSE}
+#DEFINE FUNCTION 
+make_individual_files_from_averaged_data <- function(data) {
+  
+  #these are the folder IDs for the processed UV data. Make sure to switch when migrating to Shared Google Drive
+  folder_id <- switch(np_size,
+                      "10 nm" = "1HEg2Bem4QMm2jEBaXh_klJ5O-pM1fJvU",
+                      "10nm"  = "1HEg2Bem4QMm2jEBaXh_klJ5O-pM1fJvU",
+                      "20 nm" = "1KJjAmB0DuJkYpezjCv1inEwDBVUq3V0Q",
+                      "20nm"  = "1KJjAmB0DuJkYpezjCv1inEwDBVUq3V0Q",
+                      "50 nm" = "1fSCWrtb4diBKc3RPzZb17dD4LNs1mcF-",
+                      "50nm"  = "1fSCWrtb4diBKc3RPzZb17dD4LNs1mcF-",
+                      "80 nm" = "1GrqyWvw9HkpDksHpY56tmxcwswHgGI5I",
+                      "80nm"  = "1GrqyWvw9HkpDksHpY56tmxcwswHgGI5I")
+
+  #list of measurements to process
+   measurements <- colnames(data)[-1]
+
+  for (measurement in measurements) {
+    
+    #filter data for the current measurement and make the column "absorbance" (the original column name will be used as the file name)
+    filtered_data <- data %>% 
+                     select(Wavelength, Absorbance = all_of(measurement))
+
+    #create a file name (same as original column name)
+    output_file_name <- paste0(measurement)
+    
+    #write the filtered data to an Excel file
+    write_xlsx(filtered_data, output_file_name)
+    
+    #upload Excel file to Google Drive. make explicit definitions of media, path, and name to avoid errors 
+    drive_upload(
+      media = output_file_name, 
+      path = as_id(folder_id), 
+      name = output_file_name
+    )
+  }
+   
+}
+
+
+```
+
+Execute Function (This example is a continues with the `averaged_data`
+defined above):
+
+```{r tidy=TRUE, eval=FALSE}
+#execute function 
+make_individual_files_from_averaged_data(averaged_data)
+
+```
+
+Done! The files will be uploaded to Google Drive in \~10 seconds.
+
+![](images/Screenshot%202023-12-19%20at%2012.00.53%20AM.png)
+
+Each file is formatted like so:
+
+![](images/Screenshot%202023-12-19%20at%2012.02.42%20AM.png)
+
+I believe that file upload process is simple and efficient. I have
+uploaded multiple different data sheets to Google Drive in \~30 seconds
+using only three functions:
+
+```{r tidy=TRUE, eval=FALSE}
+drive_auth()
+
+#works on any plate data named correctly, no matter the amount of peptoids
+load_plate("YOUR-PLATE-DATA.xlsx") #"4F-4G-4H-4I-4J-5A.xlsx"
+
+make_individual_files_from_averaged_data(averaged_data)
+```
+
+In the future, we should adapt these functions for DLS data. I believe
+that with these functions already written, that will be very quick.
+
+# PART III: PLOTTING
+
+In this section, I will develop the plotting functions to allow for:
+
+1.  Overlay of the UV-VIs absorbance spectra of up to 10 Peptoid-AuNP s
+2.  Display spectrum of a single Peptoid-AuNP
+3.  Display the spectra overlay for a single Peptoid-AuNP in 3 salt
+    concentrations(0 mM, 200 mM, 500 mM)
+
+These functions can be used separately, or together, in the same
+session. This sections finishes with my future plans for more functions.
+
+### fetch_overlay()
+
+To create an overlay plot of the UV-VIs absorbance spectra of up to 10
+Peptoid-AuNP s, I will define a function, `fetch_overlay()`, to input
+some of the processed data I just uploaded to Google Drive and overlay
+the spectra over each other:
+
+DEFINE `fetch_overlay()`:
+
+```{r tidy=TRUE, eval=FALSE}
+fetch_overlay <- function(file_names, folder_id) {
+  # authenticate google drive 
+  drive_auth()
+
+  #initialize an empty dataframe for all data. include "Source" for Legend purposes later
+  all_data <- data.frame(
+    Wavelength = numeric(), 
+    Absorbance = numeric(), 
+    Source = character())
+
+  for (file_name in file_names) {
+    
+    #construct the search query
+    query <- paste0("name = '", file_name, "' and '", folder_id, "' in parents and trashed = false")
+
+    #find the file in the specified folder
+    file <- drive_find(n_max = Inf, q = query)
+
+    #check if the file was found
+    if (nrow(file) == 0) {
+      stop("File not found: ", file_name, " in folder ID: ", folder_id)
+    }
+
+    #get the file ID
+    file_id <- file$id[1]
+
+    #define the path to save the downloaded file. this is a temporary file
+    local_path <- tempfile(fileext = ".xlsx")
+
+    #download the file from google drive
+    drive_download(as_id(file_id), path = local_path, overwrite = TRUE)
+
+    #read the data from the excel file
+    data <- read_excel(local_path)
+
+    #add a source column to the data
+    data$Source <- file_name
+
+    #combine this data with the main dataframe
+    all_data <- rbind(all_data, data)
+  }
+  
+  #create plot 
+  p <- ggplot(all_data, aes(x = Wavelength, y = Absorbance, color = Source)) +
+    geom_line() +
+    labs(title = "Overlayed Absorbance Spectra",
+       x = "Wavelength",
+       y = "Absorbance",
+       color = "Legend") +  
+    theme_minimal()
+  
+  #save plot locally, file dimensions can be changed easily 
+  plot_filename <- readline(prompt = "What do you want to name this plot? (Dont forget to include .png!):   ")
+  
+  #check if the filename has an extension
+  if (!grepl("\\.[a-zA-Z]+$", plot_filename)) {
+    stop("Error: Please include a file extension in the filename (e.g., .png, .pdf)")
+  }
+
+  #save plot for some reason, if dpi is too high it will stall
+  ggsave(plot_filename, plot = p, width = 10, height = 8, dpi = 100)
+
+  #upload the file
+  drive_upload(media = plot_filename, path = as_id('1jlH08MwkXu9T3bFu24q4eLgs4yIQ940k'))
+
+   
+  return(p)
+}
+
+
+```
+
+EXECUTE `fetch_overlay()`:
+
+```{r tidy=TRUE, eval=FALSE}
+#this is the processed 10nm folder, make sure to give the option for other AuNP sizes
+folder_id <- "1HEg2Bem4QMm2jEBaXh_klJ5O-pM1fJvU" 
+
+#add up to 10 file names
+file_names <- c("4F-0mM.xlsx", "4G-0mM.xlsx", "4H-0mM.xlsx","4I-0mM.xlsx","4J-0mM.xlsx","5A-0mM.xlsx" )
+
+#execute function
+fetch_overlay(file_names, folder_id)
+
+
+```
+
+This will appear in the console like this (using
+`4F-4G-4H-4I-4J-5A.xlsx` for this example):
+
+![](images/Screenshot%202023-12-19%20at%202.13.37%20AM.png)
+
+and the resulting plot will look like:
+
+![](images/000018.png)
+
+and here it is in Google Drive:
+
+![](images/Screenshot%202023-12-19%20at%202.16.57%20AM.png)
+
+NOTES:
+
+-   The graph is obviously not formatted entirely correctly, but
+    adjustments can be made extremely quickly. I just made it like this
+    for the demo
+
+-   We might be able to automate the file_names variable assignment
+    somehow, but I don't think that an extra line of code is that much
+    work considering how powerful the function is.
+
+### fetch_spectrum()
+
+Now, I will define `fetch_spectrum()`. This function will allow us to
+create a plot of a single peptoid in a single [NaCl].
+
+DEFINE `fetch_spectrum()`:
+
+```{r tidy=TRUE, eval=FALSE}
+fetch_spectrum <- function(file_name, folder_id) {
+  #authenticate google drive 
+  drive_auth()
+  
+  #ask user for file name
+  file_name <- readline(prompt = "Select Peptoid File of Interest (Don't forget to include [NaCl] and .xlsx!): ")
+  
+  #construct the search query
+  query <- paste0("name = '", file_name, "' and '", folder_id, "' in parents and trashed = false")
+
+  #find the file in the specified folder
+  file <- drive_find(n_max = Inf, q = query)
+
+  #check if the file was found
+  if (nrow(file) == 0) {
+    stop("File not found: ", file_name, " in folder ID: ", folder_id)
+  }
+
+  #get the file ID
+  file_id <- file$id[1]
+
+  #define the path to save the downloaded file
+  local_path <- tempfile(fileext = ".xlsx")
+
+  #download the file from Google Drive
+  drive_download(as_id(file_id), path = local_path, overwrite = TRUE)
+ 
+  #read the data from the Excel file
+  data <- read_excel(local_path)
+  
+  #add a source/identity column to the data
+  data$Source <- file_name
+
+
+  #create plot
+  p <- ggplot(data, aes(x = data[[1]], y = data[[2]], color = Source)) +
+    geom_line() +
+    labs(title = "Absorbance Spectrum",
+         x = "Wavelength",
+         y = "Absorbance",
+         color = "Legend") +
+    theme_minimal()
+  
+  #save plot locally, file dimensions can be changed easily 
+  plot_filename <- readline(
+    prompt = "What do you want to name this plot? (Dont forget to include .png!):   ")
+  ggsave(plot_filename, plot = p, width = 10, height = 8, dpi = 300)
+
+  #upload the file
+  drive_upload(media = plot_filename, path = as_id('1jlH08MwkXu9T3bFu24q4eLgs4yIQ940k'))
+}
+
+```
+
+EXECUTE `fetch_spectrum()`:
+
+```{r tidy=TRUE, eval=FALSE}
+#this is the processed 10nm folder, make sure to give the option for other AuNP sizes
+folder_id <- "1HEg2Bem4QMm2jEBaXh_klJ5O-pM1fJvU" 
+
+fetch_spectrum(file_name, folder_id)
+
+
+```
+
+This will appear in the console like this (using '`4I-0mM.xlsx`' for
+example):
+
+![](images/Screenshot%202023-12-19%20at%2012.59.54%20AM.png)
+
+and the resulting plot will look like this:
+
+![](images/000021.png)
+
+![]()
+
+and here it is in Google Drive:
+
+![](images/Screenshot%202023-12-19%20at%201.24.17%20AM.png)
+
+### fetch_survey_spectrum()
+
+I will now define a function called `fetch_survey_spectrum()` that will
+fetch a spectrum for a single Peptoid-AuNP in 3 salt concentrations (0
+mM, 200 mM, 500 mM).
+
+DEFINE `fetch_survey_spectrum()`:
+
+```{r tidy=TRUE, eval=FALSE}
+fetch_survey_spectrum <- function(file1_name, file2_name, file3name, folder_id) {
+  
+  #consider in future replacing to a if else statement checking to see if user is logged into to google drive
+  drive_auth()
+
+  #this defines the data frame with all 3 files loaded in that is used in plotting 
+  all_data <- data.frame(Wavelength = numeric(), Absorbance = numeric(), Source = character())
+  
+  #define file names using user input
+  user_input <- readline(
+    prompt = "Select Peptoid of Interest (Don't include [NaCl] or .xlsx!):  ")
+  file1_name <- paste0(user_input,"-0mM.xlsx")
+  file2_name <- paste0(user_input,"-200mM.xlsx")
+  file3_name <- paste0(user_input,"-500mM.xlsx")
+
+  #define iterator 
+  file_names <- c(file1_name, file2_name, file3_name)
+  
+  #for loop to find each file and add it to all_data + if statements to work for peptoids with out all spectrums 
+  for (file_name in file_names) {
+    query <- paste0("name = '", file_name, "' and '", folder_id, "' in parents and trashed = false")
+    file <- try(drive_find(n_max = Inf, q = query), silent = TRUE)
+
+    # Skip this iteration if the file is not found
+    if (inherits(file, "try-error")) {
+      message("Skipping file not found: ", file_name)
+      next
+    }
+
+    if (nrow(file) == 0) {
+      message("File not found: ", file_name, ". Skipping.")
+      next
+    }
+
+    file_id <- file$id[1]
+    local_path <- tempfile(fileext = ".xlsx")
+    drive_download(as_id(file_id), path = local_path, overwrite = TRUE)
+
+    data <- read_excel(local_path)
+    data$Source <- file_name
+    all_data <- rbind(all_data, data)
+  }
+
+  if (nrow(all_data) == 0) {
+    stop("No data to plot: All specified files are missing.")
+  }
+
+  p <- ggplot(all_data, aes(x = Wavelength, y = Absorbance, color = Source)) +
+    geom_line() +
+    labs(
+      title = "Overlayed Absorbance Spectra", 
+      x = "Wavelength", 
+      y = "Absorbance", 
+      color = "Legend") +
+    theme_minimal()
+   #save plot locally, file dimensions can be changed easily 
+  plot_filename <- readline(
+    prompt = "What do you want to name this plot? (Dont forget to include .png!):   ")
+  ggsave(plot_filename, plot = p, width = 10, height = 8, dpi = 100)
+
+  #upload the file
+  drive_upload(media = plot_filename, path = as_id('1jlH08MwkXu9T3bFu24q4eLgs4yIQ940k'))
+  return(p)
+}
+
+```
+
+EXECUTE `fetch_survey_spectrum()`:
+
+```{r tidy=TRUE, eval=FALSE}
+#hardcoded this for now, but eventually make it a user input in the function 
+folder_id <- "1HEg2Bem4QMm2jEBaXh_klJ5O-pM1fJvU" 
+fetch_survey_spectrum(file1_name, file2_name, file3_name, folder_id)
+```
+
+This will appear in the console like this (using Peptoid 4G on 10nm AuNP
+for example):
+
+![](images/Screenshot%202023-12-19%20at%202.36.35%20AM.png)
+
+and the resulting plot will look like this:
+
+![](images/000012-01.png)
+
+and here it is in Google Drive:
+
+![](images/Screenshot%202023-12-19%20at%202.39.16%20AM.png)
+
+In the future, I would like to make more functions for different types
+of plots, like the aggregation parameter (code for this already written
+during Summer 2023). I also may consider making a separate function for
+creating the plots, that way I can just call a single function
+repeatedly instead of copy and pasting the ggplot creating in each
+function. also consider creating a `save_plot()` function. I also want
+to create a way to more easily define the folder ID for differently
+sized nanoparticles.
+
+### fetch_aggregation_plots()
+
+Now I will define `fetch_aggregation_plots()`. This function will allow
+us to create an overlay plot of the aggregation parameters of up to 10
+peptoids.
+
+Define `fetch_aggregation_plots()`:
+
+```{r tidy=TRUE, eval=FALSE}
+fetch_aggregation_plots <- function() {
+  
+  #get peptoid name from user input
+  agg_peptoid_name <- readline(prompt = "What peptoid would you like to look at today ?: ")
+  agg_file_name <- paste0(agg_peptoid_name,".xlsx")
+
+  #folder path CHANGE WHEN MIGRATING TO SHARED GOOGLE DRIVE this is the 10nm processede data   folder 
+  folder_id <- "1HEg2Bem4QMm2jEBaXh_klJ5O-pM1fJvU"
+  
+  
+
+  #consider making the search file into a seperate function
+  
+  #initialize an empty dataframe for all data. include "Source" for Legend purposes later
+  all_data <- data.frame(
+    Wavelength = numeric(), 
+    Absorbance = numeric(), 
+    Source = character())
+
+  for (file_name in file_names) {
+    
+    #construct the search query
+    query <- paste0("name = '", file_name, "' and '", folder_id, "' in parents and trashed = false")
+
+    #find the file in the specified folder
+    file <- drive_find(n_max = Inf, q = query)
+
+    #check if the file was found
+    if (nrow(file) == 0) {
+      stop("File not found: ", file_name, " in folder ID: ", folder_id)
+    }
+
+    #get the file ID
+    file_id <- file$id[1]
+
+    #define the path to save the downloaded file. this is a temporary file
+    local_path <- tempfile(fileext = ".xlsx")
+
+    #download the file from google drive
+    drive_download(as_id(file_id), path = local_path, overwrite = TRUE)
+
+    #read the data from the excel file
+    data <- read_excel(local_path)
+
+    #add a source column to the data
+    data$Source <- file_name
+
+    #combine this data with the main dataframe
+    all_data <- rbind(all_data, data)
+  }
+
+  
+  
+  
+  
+values <- c(A0, A1, A2, A3, A4, A5)
+interval <- 6
+x_axis <- seq(0, 500, length.out = interval)
+
+# plot
+plot(x_axis, values, type = "l", col = "blue", lwd = 2,
+     xlab = "[NaCl] mM", ylab = "Aggregation parameter", ylim = c(0, 2), main = "KS28")
+
+# points
+points(x_axis, values, col = "red", pch = 16)
+
+# grid lines
+grid()
+
+# legend
+legend("topright", legend = "KS28", col = "blue", lwd = 2, pch = 16)
+
+  
+  
+  
+  
+}
+```
+
+# PART IV: UPDATING MASTER GOOGLE SHEET USING R AND SORTING STRUCTURES BASED ON META DATA
+
+In this section, I will develop the R functions used to update the
+master Google Sheet with new peptoid structures, with or without UV
+data,
+
+First, I will outline the meta data tags that will be associated with
+each molecule. In the future, we will be able to add more of these meta
+data tags.
+
+-   `NAME` (string): Name of the peptoid
+
+-   **`SMILES`** (string): SMILES code for each peptoid structure.
+
+-   **`RESIDUES`** (integer): Number of residues.
+
+-   **`MW`** (float): Molecular weight in g/mol.
+
+-   **`CHARGE`** (integer): Net charge of peptoid.
+
+-   **`CHIRAL`** (boolean): 'Y' or 'N' for chiral property.
+
+-   **`AROMATIC`** (boolean): 'Y' or 'N' for aromatic property.
+
+To start, remember to authenticate Google Drive AND Google Sheets.
+
+```{r tidy=TRUE, eval=FALSE}
+
+drive_auth()
+
+gs4_auth()
+```
+
+### upload_peptoids()
+
+`upload_peptoids()` will take user input about a peptoid's properties
+and upload the structure to the master Google Sheet with its UV data (if
+applicable).
+
+Define `upload_peptoids()`:
+
+```{r tidy=TRUE, eval=FALSE}
+upload_peptoids <- function(num_peptoids) {
+
+  #sheet ID for the google sheet
+  sheet_id <- "1YtaESoC86Csj8eVWf6RSiYNfEl1eL85Bl4PyF1vi1kI"
+  
+ for (i in 1:num_peptoids) {
+    cat("Entering data for Peptoid", i, ":\n")
+
+    #user input for peptoid properties
+    peptoid_id <- readline(prompt = "Enter Peptoid ID: ")
+    smiles <- readline(prompt = "Enter SMILES code: ")
+    residues <- as.integer(readline(prompt = "Enter number of Residues: "))
+    mw <- as.numeric(readline(prompt = "Enter Molecular Weight (g/mol): "))
+    charge <- as.integer(readline(prompt = "Enter Net Charge of peptoid: "))
+    chiral <- readline(prompt = "Is the peptoid chiral? (Y/N): ")
+    aromatic <- readline(prompt = "Is the peptoid aromatic? (Y/N): ")
+    
+    #right now, this only allows for 10nm sized particles, in the future we will expand to allow for UV spectrum for all size particles
+    ten_nm_folder_id <-"1HEg2Bem4QMm2jEBaXh_klJ5O-pM1fJvU"
+    
+    #define file names 
+    UV0_file_name <- paste0(peptoid_id,"-0mM.xlsx")
+    UV200_file_name <- paste0(peptoid_id,"-200mM.xlsx")
+    UV500_file_name <- paste0(peptoid_id,"-500mM.xlsx")
+      
+    #define file IDs, function defined below 
+    UV0_id <- get_file_id(ten_nm_folder_id, UV0_file_name)
+    UV200_id <- get_file_id(ten_nm_folder_id, UV200_file_name)
+    UV500_id <- get_file_id(ten_nm_folder_id, UV500_file_name)
+    
+    #function to create hyperlink from file ID, defined below 
+    uv0 <- get_drive_file_link(UV0_id)
+    uv200 <- get_drive_file_link(UV200_id)
+    uv500 <- get_drive_file_link(UV500_id)
+
+    #convert boolean responses to appropriate format
+    chiral <- ifelse(chiral == "Y", TRUE, FALSE)
+    aromatic <- ifelse(aromatic == "Y", TRUE, FALSE)
+    
+    #prepare the data frame for upload by matching columns with data
+    peptoid_data <- data.frame(
+      PEPTOID_ID = peptoid_id,
+      SMILES = smiles,
+      RESIDUES = residues,
+      MW = mw,
+      CHARGE = charge,
+      CHIRAL = chiral,
+      AROMATIC = aromatic,
+      UV0 = uv0,
+      UV200 = uv200,
+      UV500 = uv500)
+
+    #connect to the Google Sheet and append the new data
+    sheet <- gs4_get(sheet_id) #sheet_id is defined on the first line of the func
+    sheet_append(sheet, peptoid_data)
+    
+    cat("Peptoid", i, "data uploaded successfully.\n")
+  }
+}
+
+
+
+#function to get file ids 
+get_file_id <- function(folder_id, file_name) {
+  #construct the search query
+  query <- paste0("name = '", file_name, "' and '", folder_id, "' in parents and trashed = false")
+  
+  #search for the file using the query
+  files <- drive_find(q = query)
+  
+  #check if any file is found
+  if (nrow(files) > 0) {
+    #return the ID of the first file found
+    return(files$id[1])
+  } else {
+    warning("File not found.")
+    return(NULL)
+  }
+}
+
+
+
+#quick function to make hyperlinks from file IDs to insert into the table
+get_drive_file_link <- function(file_id) {
+  url <- paste0("https://drive.google.com/file/d/", file_id, "/edit")
+  return(url)
+}
+
+
+
+```
+
+Execute `upload_peptoids()`:
+
+```{r tidy=TRUE, eval=FALSE}
+#defien num_peptoids with however many peptoids you want to upload. In this example, lets upload 3
+num_peptoids <- 3  
+
+#exeecute function 
+upload_peptoids(num_peptoids)
+```
+
+The console will look like this:
+
+![](images/Screenshot%202023-12-19%20at%205.27.17%20PM.png)
+
+And the updated sheet will look like this:
+
+![](images/Screenshot%202023-12-19%20at%205.28.34%20PM.png)
+
+It works! Super simple and efficient.
+
+In the future, I would like to add a function to delete peptoids and
+shift all cells below up 1, as well as plotting functions for creating
+different tables based on the meta data.
